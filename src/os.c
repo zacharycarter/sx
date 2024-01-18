@@ -53,6 +53,8 @@ SX_PRAGMA_DIAGNOSTIC_POP()
 #    elif SX_PLATFORM_BSD
 #        include <sys/sysctl.h>
 #        include <sys/types.h>
+#    elif SX_PLATFORM_EMSCRIPTEN
+#        include <emscripten.h>
 #    endif
 #endif
 
@@ -307,6 +309,23 @@ bool sx_os_copy(const char* src, const char* dest)
     close(input);
     close(output);
     return result > -1;
+#elif SX_PLATFORM_EMSCRIPTEN
+    EM_ASM_({
+        const srcFileContent = Module.FS.readFile(UTF8ToString($0), {
+            encoding: "utf8",
+        });
+        const srcBuf = new TextEncoder("utf-8").encode(entryScriptSrc);
+        const destFile = Module.FS.open(UTF8ToString($0), "w+");
+        Module.FS.write(
+            srcFileContent,
+            destFile,
+            0,
+            srcBuf.length,
+            0
+        );
+        Module.FS.close(destFile);
+    }, src, dest);
+    return true;
 #else
     sx_assert(0, "not implemented");
     return false;

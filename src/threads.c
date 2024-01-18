@@ -15,6 +15,12 @@
 #    include <dispatch/dispatch.h>
 #    include <mach/mach.h>
 #    include <pthread.h>
+#elif SX_PLATFORM_EMSCRIPTEN
+#    include <errno.h>
+#    include <pthread.h>
+#    include <semaphore.h>
+#    include <time.h>
+#    include <unistd.h>
 #elif SX_PLATFORM_POSIX
 #    define __USE_GNU
 #    include <errno.h>
@@ -224,8 +230,10 @@ sx_thread* sx_thread_create(const sx_alloc* alloc, sx_thread_cb* callback, void*
     r = pthread_create(&thrd->handle, &attr, thread_fn, thrd);
     sx_assertf(r == 0, "pthread_create failed");
 
+#    if !SX_PLATFORM_EMSCRIPTEN
     // Ensure that thread callback is running
     sx_semaphore_wait(&thrd->sem, -1);
+#    endif
 
 #    if !SX_PLATFORM_APPLE
     if (name)
@@ -712,6 +720,8 @@ uint32_t sx_thread_tid(void)
 {
 #if SX_PLATFORM_WINDOWS
     return GetCurrentThreadId();
+#elif SX_PLATFORM_EMSCRIPTEN
+    return (uint32_t)pthread_self();
 #elif SX_PLATFORM_LINUX || SX_PLATFORM_RPI || SX_PLATFORM_STEAMLINK
     return (pid_t)syscall(SYS_gettid);
 #elif SX_PLATFORM_APPLE
