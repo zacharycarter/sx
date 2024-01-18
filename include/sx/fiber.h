@@ -117,17 +117,34 @@ typedef struct sx_alloc sx_alloc;
 
 #define SX_FIBER_INVALID NULL
 
-typedef void* sx_fiber_t;
+#if SX_PLATFORM_EMSCRIPTEN
+#include <emscripten/fiber.h>
 
-typedef struct sx_fiber_transfer {
-    sx_fiber_t from;
+typedef struct sx_fiber_t
+{
+    emscripten_fiber_t* context;
+    char* asyncify_stack;
+    void* fiber_cb;
     void* user;
-} sx_fiber_transfer;
+} sx_fiber_t;
+static sx_fiber_t main_fiber;
+static sx_fiber_t* running_fiber = 0;
+#else
+typedef struct sx_fiber_t
+{
+    void* context;
+} sx_fiber_t;
+#endif
 
 typedef struct sx_fiber_stack {
     void* sptr;
     unsigned int ssize;
 } sx_fiber_stack;
+
+typedef struct sx_fiber_transfer {
+    sx_fiber_t from;
+    void* user;
+} sx_fiber_transfer;
 
 typedef void(sx_fiber_cb)(sx_fiber_transfer transfer);
 
@@ -159,5 +176,5 @@ SX_API bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size sx_def
 SX_API void sx_fiber_stack_init_ptr(sx_fiber_stack* fstack, void* ptr, unsigned int size);
 SX_API void sx_fiber_stack_release(sx_fiber_stack* fstack);
 
-SX_API sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb);
+SX_API sx_fiber_t sx_fiber_create(sx_fiber_t *fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb);
 SX_API sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user);

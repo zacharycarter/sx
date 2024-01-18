@@ -29,6 +29,10 @@ SX_PRAGMA_DIAGNOSTIC_POP()
 
 #define DEFAULT_STACK_SIZE 131072    // 120kb
 
+#if SX_PLATFORM_EMSCRIPTEN
+#define ASYNCIFY_STACK_SIZE 32768
+#endif
+
 // Fwd declare ASM functions
 SX_API sx_fiber_transfer jump_fcontext(sx_fiber_t const, void*);
 SX_API sx_fiber_t make_fcontext(void*, size_t, sx_fiber_cb*);
@@ -48,7 +52,7 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
     }
     DWORD old_opts;
     VirtualProtect(ptr, sx_os_pagesz(), PAGE_READWRITE | PAGE_GUARD, &old_opts);
-#elif SX_PLATFORM_POSIX
+#elif SX_PLATFORM_POSIX && !SX_PLATFORM_EMSCRIPTEN
     ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) {
         sx_out_of_memory();
@@ -86,21 +90,55 @@ void sx_fiber_stack_release(sx_fiber_stack* fstack)
 
 #if SX_PLATFORM_WINDOWS
     VirtualFree(ptr, 0, MEM_RELEASE);
-#elif SX_PLATFORM_POSIX
+#elif SX_PLATFORM_POSIX && !SX_PLATFORM_EMSCRIPTEN
     munmap(ptr, fstack->ssize);
 #else
     free(ptr);
 #endif
 }
 
-sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
+#if SX_PLATFORM_EMSCRIPTEN
+sx_fiber_t sx_fiber_init_main()
 {
-    return make_fcontext(stack.sptr, stack.ssize, fiber_cb);
+    main_fiber.asyncify_stack = (char*)malloc(ASYNCIFY_STACK_SIZE * sizeof(char));
+    emscripten_fiber_init_from_current_context(&main_fiber.context, main_fiber.asyncify_stack,
+                                               ASYNCIFY_STACK_SIZE);
+    running_fiber = &main_fiber;
+}
+
+static inline void fiber_entry(void* entrypoint)
+{
+    const sx_fiber_t* fiber = (const sx_fiber_t*)entrypoint;
+    ((sx_fiber_cb*)fiber->fiber_cb)((sx_fiber_transfer){ running_fiber->context, fiber->user });
+}
+#endif
+
+sx_fiber_t sx_fiber_create(sx_fiber_t* fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
+{
+#if SX_PLATFORM_EMSCRIPTEN
+    if (!running_fiber)
+        sx_fiber_init_main();
+
+    fib->context = calloc(1, sizeof(emscripten_fiber_t));
+    fib->fiber_cb = fiber_cb;
+    emscripten_fiber_init(fib->context, fiber_entry, fib, stack.sptr, stack.ssize,
+                          fib->asyncify_stack, ASYNCIFY_STACK_SIZE);
+#else
+    fib->context = make_fcontext(stack.sptr, stack.ssize, fiber_cb);
+#endif
 }
 
 sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user)
 {
-    return jump_fcontext(to, user);
+#if SX_PLATFORM_EMSCRIPTEN
+    sx_fiber_t* old_fiber = running_fiber;
+    running_fiber = &to;
+
+    emscripten_fiber_swap(&old_fiber->context, &running_fiber->context);
+    return (sx_fiber_transfer){ old_fiber->context, user };
+#else
+    return jump_fcontext(to->context, user);
+#endif
 }
 
 typedef enum {
@@ -131,7 +169,7 @@ typedef struct sx__coro_state {
 
 typedef struct sx_coro_context {
     const sx_alloc* alloc;
-    sx_pool* coro_pool;             // sx__coro_state
+    sx_pool* coro_pool;    // sx__coro_state
     sx__coro_state* run_list;
     sx__coro_state* run_list_last;
     sx__coro_state* cur_coro;
@@ -230,7 +268,7 @@ void sx__coro_invoke(sx_coro_context* ctx, sx_fiber_cb* callback, void* user)
         fs->init = true;
     }
 
-    fs->fiber = sx_fiber_create(fs->stack_mem, callback);
+    sx_fiber_create(&fs->fiber, fs->stack_mem, callback);
     fs->callback = callback;
     fs->user = user;
     // Add to the end of the list
@@ -289,7 +327,7 @@ bool sx_coro_replace_callback(sx_coro_context* ctx, sx_fiber_cb* callback,
         if (fs->callback == callback) {
             if (new_callback) {
                 fs->callback = new_callback;
-                fs->fiber = sx_fiber_create(fs->stack_mem, new_callback);
+                sx_fiber_create(&fs->fiber, fs->stack_mem, new_callback);
                 r = true;
             } else {
                 sx__coro_remove_list(&ctx->run_list, &ctx->run_list_last, fs);
@@ -306,7 +344,7 @@ static inline void sx__coro_return(sx_coro_context* ctx, sx_fiber_t* pfrom, sx_c
                                    int arg)
 {
     sx_assertf(ctx->cur_coro,
-              "You must call this function from within sx_fiber_cb invoked by sx_fiber_invoke");
+               "You must call this function from within sx_fiber_cb invoked by sx_fiber_invoke");
     sx_assertf(type != CORO_RET_NONE, "Invalid enum for type");
 
     sx__coro_state* fs = ctx->cur_coro;
