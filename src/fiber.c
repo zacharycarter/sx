@@ -30,7 +30,7 @@ SX_PRAGMA_DIAGNOSTIC_POP()
 #define DEFAULT_STACK_SIZE 131072    // 120kb
 
 #if SX_PLATFORM_EMSCRIPTEN
-#define ASYNCIFY_STACK_SIZE 32768
+#    define ASYNCIFY_STACK_SIZE 32768
 #endif
 
 // Fwd declare ASM functions
@@ -98,18 +98,21 @@ void sx_fiber_stack_release(sx_fiber_stack* fstack)
 }
 
 #if SX_PLATFORM_EMSCRIPTEN
-sx_fiber_t sx_fiber_init_main()
+void sx_fiber_init_main()
 {
-    main_fiber.asyncify_stack = (char*)malloc(ASYNCIFY_STACK_SIZE * sizeof(char));
-    emscripten_fiber_init_from_current_context(&main_fiber.context, main_fiber.asyncify_stack,
-                                               ASYNCIFY_STACK_SIZE);
-    running_fiber = &main_fiber;
+    if (!running_fiber) {
+        emscripten_fiber_t *main_fiber = calloc(1, sizeof(emscripten_fiber_t));
+        void *asyncify_stack = malloc(ASYNCIFY_STACK_SIZE);
+
+        emscripten_fiber_init_from_current_context(main_fiber, asyncify_stack, ASYNCIFY_STACK_SIZE);
+        running_fiber = main_fiber;
+    }
 }
 
 static inline void fiber_entry(void* entrypoint)
 {
     const sx_fiber_t* fiber = (const sx_fiber_t*)entrypoint;
-    ((sx_fiber_cb*)fiber->fiber_cb)((sx_fiber_transfer){ running_fiber->context, fiber->user });
+    ((sx_fiber_cb*)fiber->fiber_cb)((sx_fiber_transfer){ running_fiber, fiber->user });
 }
 #endif
 
@@ -131,13 +134,13 @@ sx_fiber_t sx_fiber_create(sx_fiber_t* fib, const sx_fiber_stack stack, sx_fiber
 sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user)
 {
 #if SX_PLATFORM_EMSCRIPTEN
-    sx_fiber_t* old_fiber = running_fiber;
-    running_fiber = &to;
+    emscripten_fiber_t* old_fiber = running_fiber;
+    running_fiber = &to.context;
 
-    emscripten_fiber_swap(&old_fiber->context, &running_fiber->context);
-    return (sx_fiber_transfer){ old_fiber->context, user };
+    emscripten_fiber_swap(old_fiber, running_fiber);
+    return (sx_fiber_transfer){ old_fiber, user };
 #else
-    return jump_fcontext(to->context, user);
+    return jump_fcontext(to.context, user);
 #endif
 }
 

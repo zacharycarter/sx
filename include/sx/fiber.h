@@ -127,8 +127,7 @@ typedef struct sx_fiber_t
     void* fiber_cb;
     void* user;
 } sx_fiber_t;
-static sx_fiber_t main_fiber;
-static sx_fiber_t* running_fiber = 0;
+static emscripten_fiber_t* running_fiber = 0;
 #else
 typedef struct sx_fiber_t
 {

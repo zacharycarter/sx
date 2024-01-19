@@ -102,6 +102,9 @@ char* sx_strcpy(char* SX_RESTRICT dst, int dst_sz, const char* SX_RESTRICT src)
 // https://github.com/lattera/glibc/blob/master/string/strlen.c
 int sx_strlen(const char* str)
 {
+#if SX_PLATFORM_EMSCRIPTEN
+    return (int)strlen(str);
+#else
     const char* char_ptr;
     const uintptr_t* longword_ptr;
     uintptr_t longword, himagic, lomagic;
@@ -147,10 +150,11 @@ int sx_strlen(const char* str)
         }
     }
 
-    #if !SX_COMPILER_MSVC
+#if !SX_COMPILER_MSVC
     sx_assertf(0, "Not a null-terminated string");
     return -1;
-    #endif
+#endif
+#endif // SX_PLATFORM_EMSCRIPTEN
 }
 
 static inline int sx__strnlen(const char* str, int _max)
