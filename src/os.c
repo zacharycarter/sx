@@ -9,7 +9,17 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#if SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_EMSCRIPTEN
+#    include <emscripten/threading.h>
+#    include <dirent.h>    // S_IFREG
+#    include <fcntl.h>     // open
+#    include <limits.h>
+#    include <pthread.h>
+#    include <sys/resource.h>
+#    include <termios.h>
+#    include <time.h>
+#    include <unistd.h>
+#elif SX_PLATFORM_WINDOWS
 #    define VC_EXTRALEAN
 #    define WIN32_LEAN_AND_MEAN
 // clang-format off
@@ -70,7 +80,9 @@ size_t sx_os_pagesz(void)
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return (size_t)si.dwPageSize;
-#elif SX_PLATFORM_POSIX
+#elif SX_PLATFORM_EMSCRIPTEN
+    return 0;
+#elif SX_PLATFORM_POSIX && !SX_PLATFORM_EMSCRIPTEN
     return (size_t)sysconf(_SC_PAGESIZE);
 #endif
 }
@@ -79,7 +91,9 @@ size_t sx_os_maxstacksz(void)
 {
 #if SX_PLATFORM_WINDOWS
     return 1073741824;    // 1gb
-#elif SX_PLATFORM_POSIX
+#elif SX_PLATFORM_EMSCRIPTEN
+    return 0;
+#elif SX_PLATFORM_POSIX && !SX_PLATFORM_EMSCRIPTEN
     struct rlimit limit;
     getrlimit(RLIMIT_STACK, &limit);
     return limit.rlim_max;
@@ -671,7 +685,9 @@ char* sx_os_path_normpath(char* dst, int size, const char* path)
 
 int sx_os_numcores(void)
 {
-#if SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_EMSCRIPTEN
+    return emscripten_num_logical_cores();
+#elif SX_PLATFORM_WINDOWS
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     return sysinfo.dwNumberOfProcessors;

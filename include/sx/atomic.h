@@ -120,7 +120,9 @@ SX_FORCE_INLINE uint64_t sx_atomic_compare_exchange64_strong_explicit(sx_atomic_
                                                                       sx_atomic_memory_order success, sx_atomic_memory_order fail);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#if SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_EMSCRIPTEN
+#    include <emscripten.h>
+#elif SX_PLATFORM_WINDOWS
 #    if SX_ARCH_32BIT && SX_CPU_X86
 #       if !SX_COMPILER_MSVC
 #          include <x86intrin.h>
@@ -169,7 +171,9 @@ SX_FORCE_INLINE void sx_relax_cpu(void)
 // https://github.com/google/benchmark/blob/v1.1.0/src/cycleclock.h
 SX_FORCE_INLINE uint64_t sx_cycle_clock(void)
 {
-#if SX_PLATFORM_APPLE
+#if SX_PLATFORM_EMSCRIPTEN
+    return emscripten_get_now();
+#elif SX_PLATFORM_APPLE
     return mach_absolute_time();
 #elif SX_PLATFORM_WINDOWS && SX_COMPILER_MSVC
 #    if SX_ARCH_32BIT

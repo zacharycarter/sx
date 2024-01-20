@@ -41,10 +41,18 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
 {
     if (size == 0)
         size = DEFAULT_STACK_SIZE;
+#if !SX_PLATFORM_EMSCRIPTEN
     size = (uint32_t)sx_os_align_pagesz(size);
+#endif
     void* ptr;
 
-#if SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_EMSCRIPTEN
+    ptr = memalign(16, size);
+    if (!ptr) {
+        sx_out_of_memory();
+        return false;
+    }
+#elif SX_PLATFORM_WINDOWS
     ptr = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!ptr) {
         sx_out_of_memory();
@@ -74,6 +82,10 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
 
 void sx_fiber_stack_init_ptr(sx_fiber_stack* fstack, void* ptr, unsigned int size)
 {
+#if SX_PLATFORM_EMSCRIPTEN
+    fstack->sptr = ptr;
+    fstack->ssize = size;
+#else
     size_t page_sz = sx_os_pagesz();
     sx_unused(page_sz);
     sx_assertf((uintptr_t)ptr % page_sz == 0, "buffer size must be dividable to OS page size");
@@ -81,6 +93,7 @@ void sx_fiber_stack_init_ptr(sx_fiber_stack* fstack, void* ptr, unsigned int siz
 
     fstack->sptr = ptr;
     fstack->ssize = size;
+#endif
 }
 
 void sx_fiber_stack_release(sx_fiber_stack* fstack)
@@ -116,7 +129,7 @@ static inline void fiber_entry(void* entrypoint)
 }
 #endif
 
-sx_fiber_t sx_fiber_create(sx_fiber_t* fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
+void sx_fiber_create(sx_fiber_t* fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
 {
 #if SX_PLATFORM_EMSCRIPTEN
     if (!running_fiber)
@@ -135,7 +148,7 @@ sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user)
 {
 #if SX_PLATFORM_EMSCRIPTEN
     emscripten_fiber_t* old_fiber = running_fiber;
-    running_fiber = &to.context;
+    running_fiber = to.context;
 
     emscripten_fiber_swap(old_fiber, running_fiber);
     return (sx_fiber_transfer){ old_fiber, user };

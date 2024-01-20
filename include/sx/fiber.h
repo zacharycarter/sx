@@ -175,5 +175,5 @@ SX_API bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size sx_def
 SX_API void sx_fiber_stack_init_ptr(sx_fiber_stack* fstack, void* ptr, unsigned int size);
 SX_API void sx_fiber_stack_release(sx_fiber_stack* fstack);
 
-SX_API sx_fiber_t sx_fiber_create(sx_fiber_t *fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb);
+SX_API void sx_fiber_create(sx_fiber_t *fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb);
 SX_API sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user);
