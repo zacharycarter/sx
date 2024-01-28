@@ -113,6 +113,24 @@
 
 #include <stdbool.h>
 
+#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)
+
+#include <stddef.h>
+
+#    ifdef __cplusplus
+extern "C" {
+#    endif
+
+// Check out sanitizer/asan-interface.h in compiler-rt for documentation.
+void __sanitizer_start_switch_fiber(void** fake_stack_save, const void* bottom, size_t size);
+void __sanitizer_finish_switch_fiber(void* fake_stack_save, const void** bottom_old,
+                                     size_t* size_old);
+#    ifdef __cplusplus
+}
+#    endif
+#    define HAS_ASAN
+#endif
+
 typedef struct sx_alloc sx_alloc;
 
 #define SX_FIBER_INVALID NULL
@@ -140,15 +158,20 @@ typedef void(sx_fiber_cb)(sx_fiber_transfer transfer);
 
 typedef struct sx_fiber_ctx {
     emscripten_fiber_t fiber;
-    emscripten_fiber_t* from;
+    struct sx_fiber_ctx* from;
     char asyncify_stack[1024];
     sx_fiber_cb* cb;
     void* user;
+#ifdef HAS_ASAN
+    void *asan_fake_stack;
+    const void *asan_stack;
+    size_t asan_stack_size;
+#endif
 } sx_fiber_ctx;
 
-static thread_local emscripten_fiber_t* running = NULL;
 static unsigned char main_asyncify_stack[SX_ASYNCFY_STACK_SIZE];
-static thread_local emscripten_fiber_t main;
+static thread_local sx_fiber_ctx* running = NULL;
+static thread_local sx_fiber_ctx* main;
 #endif
 
 // High level context API

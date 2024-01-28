@@ -117,6 +117,11 @@ sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
 #if SX_PLATFORM_EMSCRIPTEN
     sx_fiber_ctx* ctx = calloc(1, sizeof(sx_fiber_ctx));
     ctx->cb = fiber_cb;
+#    ifdef HAS_ASAN
+    ctx->asan_fake_stack = NULL;
+    ctx->asan_stack = stack.sptr;
+    ctx->asan_stack_size = stack.ssize;
+#    endif
     emscripten_fiber_init(&ctx->fiber, sx_fiber_entry, ctx, stack.sptr, stack.ssize,
                           ctx->asyncify_stack, sizeof(ctx->asyncify_stack));
     return ctx;
@@ -128,18 +133,36 @@ sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
 sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user)
 {
 #if SX_PLATFORM_EMSCRIPTEN
-    emscripten_fiber_t* from = running;
+    sx_fiber_ctx* ctx = (sx_fiber_ctx*)to;
+    sx_fiber_ctx* from = running;
     if (!from) {
-        from = &main;
-        emscripten_fiber_init_from_current_context(from, main_asyncify_stack,
+        main = calloc(1, sizeof(sx_fiber_ctx));
+        main->asan_fake_stack = NULL;
+        main->asan_stack = NULL;
+        main->asan_stack_size = 0;
+        from = main;
+        emscripten_fiber_init_from_current_context(&from->fiber, main_asyncify_stack,
                                                    SX_ASYNCFY_STACK_SIZE);
+    } else {
+#    if defined(HAS_ASAN)
+        void* bottom_old = NULL;
+        size_t size_old = 0;
+        __sanitizer_finish_switch_fiber(from->asan_fake_stack, (const void**)&bottom_old,
+                                        &size_old);
+        from->asan_fake_stack = NULL;
+#    endif
     }
 
-    sx_fiber_ctx* ctx = (sx_fiber_ctx*)to;
-    running = &ctx->fiber;
+    running = ctx;
     ctx->from = from;
     ctx->user = user;
-    emscripten_fiber_swap(from, &ctx->fiber);
+
+#    if defined(HAS_ASAN)
+    __sanitizer_start_switch_fiber(&ctx->asan_fake_stack, ctx->asan_stack, ctx->asan_stack_size);
+#    endif
+
+    emscripten_fiber_swap(&from->fiber, &ctx->fiber);
+
     return (sx_fiber_transfer){ .from = ctx };
 #else
     return jump_fcontext(to, user);
