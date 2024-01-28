@@ -82,7 +82,7 @@ size_t sx_os_pagesz(void)
     return (size_t)si.dwPageSize;
 #elif SX_PLATFORM_EMSCRIPTEN
     return 0;
-#elif SX_PLATFORM_POSIX && !SX_PLATFORM_EMSCRIPTEN
+#elif SX_PLATFORM_POSIX
     return (size_t)sysconf(_SC_PAGESIZE);
 #endif
 }
@@ -125,10 +125,14 @@ char sx_os_getch(void)
 
 size_t sx_os_align_pagesz(size_t size)
 {
+#if SX_PLATFORM_EMSCRIPTEN
+    return size;
+#else
     sx_assert(size > 0);
     size_t page_sz = sx_os_pagesz();
     size_t page_cnt = (size + page_sz - 1) / page_sz;
     return page_cnt * page_sz;
+#endif
 }
 
 size_t sx_os_processmem(void)

@@ -117,40 +117,45 @@ typedef struct sx_alloc sx_alloc;
 
 #define SX_FIBER_INVALID NULL
 
-#if SX_PLATFORM_EMSCRIPTEN
-#include <emscripten/fiber.h>
-
-typedef struct sx_fiber_t
-{
-    emscripten_fiber_t* context;
-    char* asyncify_stack;
-    void* fiber_cb;
-    void* user;
-} sx_fiber_t;
-static emscripten_fiber_t* running_fiber = 0;
-#else
-typedef struct sx_fiber_t
-{
-    void* context;
-} sx_fiber_t;
-#endif
-
-typedef struct sx_fiber_stack {
-    void* sptr;
-    unsigned int ssize;
-} sx_fiber_stack;
+typedef void* sx_fiber_t;
 
 typedef struct sx_fiber_transfer {
     sx_fiber_t from;
     void* user;
 } sx_fiber_transfer;
 
+typedef struct sx_fiber_stack {
+    void* sptr;
+    unsigned int ssize;
+} sx_fiber_stack;
+
 typedef void(sx_fiber_cb)(sx_fiber_transfer transfer);
+
+#if SX_PLATFORM_EMSCRIPTEN
+#    include <emscripten/fiber.h>
+
+#    ifndef SX_ASYNCFY_STACK_SIZE
+#        define SX_ASYNCFY_STACK_SIZE 16384
+#    endif
+
+typedef struct sx_fiber_ctx {
+    emscripten_fiber_t fiber;
+    emscripten_fiber_t* from;
+    char asyncify_stack[1024];
+    sx_fiber_cb* cb;
+    void* user;
+} sx_fiber_ctx;
+
+static thread_local emscripten_fiber_t* running = NULL;
+static unsigned char main_asyncify_stack[SX_ASYNCFY_STACK_SIZE];
+static thread_local emscripten_fiber_t main;
+#endif
 
 // High level context API
 typedef struct sx_coro_context sx_coro_context;
 
-SX_API sx_coro_context* sx_coro_create_context(const sx_alloc* alloc, int num_initial_fibers, int stack_sz);
+SX_API sx_coro_context* sx_coro_create_context(const sx_alloc* alloc, int num_initial_fibers,
+                                               int stack_sz);
 SX_API void sx_coro_destroy_context(sx_coro_context* ctx);
 SX_API void sx_coro_update(sx_coro_context* ctx, float dt);
 SX_API bool sx_coro_replace_callback(sx_coro_context* ctx, sx_fiber_cb* callback,
@@ -175,5 +180,5 @@ SX_API bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size sx_def
 SX_API void sx_fiber_stack_init_ptr(sx_fiber_stack* fstack, void* ptr, unsigned int size);
 SX_API void sx_fiber_stack_release(sx_fiber_stack* fstack);
 
-SX_API void sx_fiber_create(sx_fiber_t *fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb);
+SX_API sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb);
 SX_API sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user);

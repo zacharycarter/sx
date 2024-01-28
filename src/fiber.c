@@ -12,7 +12,9 @@
 // TODO: Implement coroutines (fibers) in emscripten
 // http://kripken.github.io/emscripten-site/docs/api_reference/emscripten.h.html#c.emscripten_coroutine
 
-#if SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_EMSCRIPTEN
+#    include <emscripten/fiber.h>
+#elif SX_PLATFORM_WINDOWS
 #    define VC_EXTRALEAN
 #    define WIN32_LEAN_AND_MEAN
 SX_PRAGMA_DIAGNOSTIC_PUSH()
@@ -29,10 +31,6 @@ SX_PRAGMA_DIAGNOSTIC_POP()
 
 #define DEFAULT_STACK_SIZE 131072    // 120kb
 
-#if SX_PLATFORM_EMSCRIPTEN
-#    define ASYNCIFY_STACK_SIZE 32768
-#endif
-
 // Fwd declare ASM functions
 SX_API sx_fiber_transfer jump_fcontext(sx_fiber_t const, void*);
 SX_API sx_fiber_t make_fcontext(void*, size_t, sx_fiber_cb*);
@@ -41,13 +39,11 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
 {
     if (size == 0)
         size = DEFAULT_STACK_SIZE;
-#if !SX_PLATFORM_EMSCRIPTEN
     size = (uint32_t)sx_os_align_pagesz(size);
-#endif
     void* ptr;
 
 #if SX_PLATFORM_EMSCRIPTEN
-    ptr = memalign(16, size);
+    ptr = calloc(1, size);
     if (!ptr) {
         sx_out_of_memory();
         return false;
@@ -60,7 +56,7 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
     }
     DWORD old_opts;
     VirtualProtect(ptr, sx_os_pagesz(), PAGE_READWRITE | PAGE_GUARD, &old_opts);
-#elif SX_PLATFORM_POSIX && !SX_PLATFORM_EMSCRIPTEN
+#elif SX_PLATFORM_POSIX
     ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) {
         sx_out_of_memory();
@@ -82,10 +78,6 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
 
 void sx_fiber_stack_init_ptr(sx_fiber_stack* fstack, void* ptr, unsigned int size)
 {
-#if SX_PLATFORM_EMSCRIPTEN
-    fstack->sptr = ptr;
-    fstack->ssize = size;
-#else
     size_t page_sz = sx_os_pagesz();
     sx_unused(page_sz);
     sx_assertf((uintptr_t)ptr % page_sz == 0, "buffer size must be dividable to OS page size");
@@ -93,7 +85,6 @@ void sx_fiber_stack_init_ptr(sx_fiber_stack* fstack, void* ptr, unsigned int siz
 
     fstack->sptr = ptr;
     fstack->ssize = size;
-#endif
 }
 
 void sx_fiber_stack_release(sx_fiber_stack* fstack)
@@ -101,9 +92,11 @@ void sx_fiber_stack_release(sx_fiber_stack* fstack)
     sx_assert(fstack->sptr);
     void* ptr = (uint8_t*)fstack->sptr - fstack->ssize;
 
-#if SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_EMSCRIPTEN
+    free(ptr);
+#elif SX_PLATFORM_WINDOWS
     VirtualFree(ptr, 0, MEM_RELEASE);
-#elif SX_PLATFORM_POSIX && !SX_PLATFORM_EMSCRIPTEN
+#elif SX_PLATFORM_POSIX
     munmap(ptr, fstack->ssize);
 #else
     free(ptr);
@@ -111,49 +104,45 @@ void sx_fiber_stack_release(sx_fiber_stack* fstack)
 }
 
 #if SX_PLATFORM_EMSCRIPTEN
-void sx_fiber_init_main()
+static void sx_fiber_entry(void* arg)
 {
-    if (!running_fiber) {
-        emscripten_fiber_t *main_fiber = calloc(1, sizeof(emscripten_fiber_t));
-        void *asyncify_stack = malloc(ASYNCIFY_STACK_SIZE);
-
-        emscripten_fiber_init_from_current_context(main_fiber, asyncify_stack, ASYNCIFY_STACK_SIZE);
-        running_fiber = main_fiber;
-    }
-}
-
-static inline void fiber_entry(void* entrypoint)
-{
-    const sx_fiber_t* fiber = (const sx_fiber_t*)entrypoint;
-    ((sx_fiber_cb*)fiber->fiber_cb)((sx_fiber_transfer){ running_fiber, fiber->user });
+    sx_fiber_ctx* ctx = (sx_fiber_ctx*)arg;
+    ctx->cb((sx_fiber_transfer){ .from = ctx->from, .user = ctx->user });
+    running = ctx->from;
 }
 #endif
 
-void sx_fiber_create(sx_fiber_t* fib, const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
+sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
 {
 #if SX_PLATFORM_EMSCRIPTEN
-    if (!running_fiber)
-        sx_fiber_init_main();
-
-    fib->context = calloc(1, sizeof(emscripten_fiber_t));
-    fib->fiber_cb = fiber_cb;
-    emscripten_fiber_init(fib->context, fiber_entry, fib, stack.sptr, stack.ssize,
-                          fib->asyncify_stack, ASYNCIFY_STACK_SIZE);
+    sx_fiber_ctx* ctx = calloc(1, sizeof(sx_fiber_ctx));
+    ctx->cb = fiber_cb;
+    emscripten_fiber_init(&ctx->fiber, sx_fiber_entry, ctx, stack.sptr, stack.ssize,
+                          ctx->asyncify_stack, sizeof(ctx->asyncify_stack));
+    return ctx;
 #else
-    fib->context = make_fcontext(stack.sptr, stack.ssize, fiber_cb);
+    return make_fcontext(stack.sptr, stack.ssize, fiber_cb);
 #endif
 }
 
 sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user)
 {
 #if SX_PLATFORM_EMSCRIPTEN
-    emscripten_fiber_t* old_fiber = running_fiber;
-    running_fiber = to.context;
+    emscripten_fiber_t* from = running;
+    if (!from) {
+        from = &main;
+        emscripten_fiber_init_from_current_context(from, main_asyncify_stack,
+                                                   SX_ASYNCFY_STACK_SIZE);
+    }
 
-    emscripten_fiber_swap(old_fiber, running_fiber);
-    return (sx_fiber_transfer){ old_fiber, user };
+    sx_fiber_ctx* ctx = (sx_fiber_ctx*)to;
+    running = &ctx->fiber;
+    ctx->from = from;
+    ctx->user = user;
+    emscripten_fiber_swap(from, &ctx->fiber);
+    return (sx_fiber_transfer){ .from = ctx };
 #else
-    return jump_fcontext(to.context, user);
+    return jump_fcontext(to, user);
 #endif
 }
 
@@ -284,7 +273,7 @@ void sx__coro_invoke(sx_coro_context* ctx, sx_fiber_cb* callback, void* user)
         fs->init = true;
     }
 
-    sx_fiber_create(&fs->fiber, fs->stack_mem, callback);
+    fs->fiber = sx_fiber_create(fs->stack_mem, callback);
     fs->callback = callback;
     fs->user = user;
     // Add to the end of the list
@@ -343,7 +332,7 @@ bool sx_coro_replace_callback(sx_coro_context* ctx, sx_fiber_cb* callback,
         if (fs->callback == callback) {
             if (new_callback) {
                 fs->callback = new_callback;
-                sx_fiber_create(&fs->fiber, fs->stack_mem, new_callback);
+                fs->fiber = sx_fiber_create(fs->stack_mem, new_callback);
                 r = true;
             } else {
                 sx__coro_remove_list(&ctx->run_list, &ctx->run_list_last, fs);

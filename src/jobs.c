@@ -130,7 +130,7 @@ static sx__job* sx__new_job(sx_job_context* ctx, int index, sx_job_cb* callback,
                 return NULL;
             }
         }
-        sx_fiber_create(&j->fiber, j->stack_mem, fiber_fn);
+        j->fiber = sx_fiber_create(j->stack_mem, fiber_fn);
         j->counter = counter;
         j->wait_counter = &ctx->dummy_counter;
         j->ctx = ctx;
@@ -233,7 +233,7 @@ static void sx__job_selector_main_thrd(sx_fiber_transfer transfer)
     }
 
     // before returning, set selector to NULL, so we know that we have to recreate the fiber
-    tdata->selector_fiber.context = NULL;       
+    tdata->selector_fiber = NULL;
     sx_fiber_switch(transfer.from, transfer.user);
 }
 
@@ -456,8 +456,8 @@ void sx_job_wait_and_del(sx_job_context* ctx, sx_job_t job)
 
         sx_fiber_switch(tdata->selector_fiber, ctx);    // Switch to selector loop
 
-        if (!tdata->selector_fiber.context) {
-            sx_fiber_create(&tdata->selector_fiber, tdata->selector_stack, sx__job_selector_main_thrd);
+        if (!tdata->selector_fiber) {
+            tdata->selector_fiber = sx_fiber_create(tdata->selector_stack, sx__job_selector_main_thrd);
         }
 
         uint64_t now_tm = sx_cycle_clock();
@@ -545,8 +545,7 @@ static int sx__job_thread_fn(void* user1, void* user2)
         ctx->thread_init_cb(ctx, index, thread_id, ctx->thread_user);
 
     // Get first stack and run selector loop
-    sx_fiber_t fiber;
-    sx_fiber_create(&fiber, tdata->selector_stack, sx__job_selector_fn);
+    sx_fiber_t fiber = sx_fiber_create(tdata->selector_stack, sx__job_selector_fn);
     sx_fiber_switch(fiber, ctx);
 
     sx_tls_set(ctx->thread_tls, NULL);
@@ -583,7 +582,8 @@ sx_job_context* sx_job_create_context(const sx_alloc* alloc, const sx_job_contex
         return NULL;
     }
     sx_tls_set(ctx->thread_tls, main_tdata);
-    sx_fiber_create(&main_tdata->selector_fiber, main_tdata->selector_stack, sx__job_selector_main_thrd);
+    main_tdata->selector_fiber =
+        sx_fiber_create(main_tdata->selector_stack, sx__job_selector_main_thrd);
 
     // pools
     ctx->job_pool = sx_pool_create(alloc, sizeof(sx__job), max_fibers);

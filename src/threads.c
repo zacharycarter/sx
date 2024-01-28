@@ -21,6 +21,7 @@
 #    include <semaphore.h>
 #    include <time.h>
 #    include <unistd.h>
+#    include <emscripten/threading.h>
 #elif SX_PLATFORM_POSIX
 #    define __USE_GNU
 #    include <errno.h>
@@ -271,7 +272,9 @@ bool sx_thread_running(sx_thread* thrd)
 
 void sx_thread_setname(sx_thread* thrd, const char* name)
 {
-#    if SX_PLATFORM_APPLE
+#    if SX_PLATFORM_EMSCRIPTEN
+    emscripten_set_thread_name(thrd->handle, name);
+#    elif SX_PLATFORM_APPLE
     sx_unused(thrd);
     pthread_setname_np(name);
 #    elif SX_PLATFORM_BSD
