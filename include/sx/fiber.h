@@ -113,9 +113,17 @@
 
 #include <stdbool.h>
 
+typedef void* sx_fiber_t;
+typedef struct sx_fiber_transfer {
+    sx_fiber_t from;
+    void* user;
+} sx_fiber_transfer;
+
+typedef void(sx_fiber_cb)(sx_fiber_transfer transfer);
+
 #if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)
 
-#include <stddef.h>
+#    include <stddef.h>
 
 #    ifdef __cplusplus
 extern "C" {
@@ -128,51 +136,47 @@ void __sanitizer_finish_switch_fiber(void* fake_stack_save, const void** bottom_
 #    ifdef __cplusplus
 }
 #    endif
-#    define HAS_ASAN
+#    define SX_ASAN_ENABLED
+#endif
+
+#if SX_PLATFORM_EMSCRIPTEN
+#    include <emscripten.h>
+#    include <emscripten/fiber.h>
+
+#    ifndef SX_ASYNCIFY_STACK_SIZE
+#        define SX_ASYNCIFY_STACK_SIZE 4096
+#    endif
+
+typedef struct sx__fiber_t {
+    emscripten_fiber_t ctx;
+    struct sx__fiber_t* from;
+    void* user;
+    sx_fiber_cb* cb;
+#ifdef SX_ASAN_ENABLED
+    void *fake_stack_save;
+    void *stack_bottom;
+    unsigned int stack_size;
+#endif
+} sx__fiber_t;
+
+static thread_local sx__fiber_t* active_fiber;
+static thread_local sx__fiber_t* main_fiber;
 #endif
 
 typedef struct sx_alloc sx_alloc;
 
 #define SX_FIBER_INVALID NULL
 
-typedef void* sx_fiber_t;
-
-typedef struct sx_fiber_transfer {
-    sx_fiber_t from;
-    void* user;
-} sx_fiber_transfer;
-
 typedef struct sx_fiber_stack {
+#if SX_PLATFORM_EMSCRIPTEN
+    char asyncify_stack[SX_ASYNCIFY_STACK_SIZE];
+    sx_align_decl(16, void*) sptr;
+    unsigned int ssize;
+#else
     void* sptr;
     unsigned int ssize;
+#endif
 } sx_fiber_stack;
-
-typedef void(sx_fiber_cb)(sx_fiber_transfer transfer);
-
-#if SX_PLATFORM_EMSCRIPTEN
-#    include <emscripten/fiber.h>
-
-#    ifndef SX_ASYNCFY_STACK_SIZE
-#        define SX_ASYNCFY_STACK_SIZE 16384
-#    endif
-
-typedef struct sx_fiber_ctx {
-    emscripten_fiber_t fiber;
-    struct sx_fiber_ctx* from;
-    char asyncify_stack[1024];
-    sx_fiber_cb* cb;
-    void* user;
-#ifdef HAS_ASAN
-    void *asan_fake_stack;
-    const void *asan_stack;
-    size_t asan_stack_size;
-#endif
-} sx_fiber_ctx;
-
-static unsigned char main_asyncify_stack[SX_ASYNCFY_STACK_SIZE];
-static thread_local sx_fiber_ctx* running = NULL;
-static thread_local sx_fiber_ctx* main;
-#endif
 
 // High level context API
 typedef struct sx_coro_context sx_coro_context;

@@ -12,9 +12,7 @@
 // TODO: Implement coroutines (fibers) in emscripten
 // http://kripken.github.io/emscripten-site/docs/api_reference/emscripten.h.html#c.emscripten_coroutine
 
-#if SX_PLATFORM_EMSCRIPTEN
-#    include <emscripten/fiber.h>
-#elif SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_WINDOWS
 #    define VC_EXTRALEAN
 #    define WIN32_LEAN_AND_MEAN
 SX_PRAGMA_DIAGNOSTIC_PUSH()
@@ -43,12 +41,15 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
     void* ptr;
 
 #if SX_PLATFORM_EMSCRIPTEN
-    ptr = calloc(1, size);
-    if (!ptr) {
+    fstack->sptr = aligned_alloc(16, size);
+    if (!fstack->sptr) {
         sx_out_of_memory();
         return false;
     }
-#elif SX_PLATFORM_WINDOWS
+    fstack->ssize = size;
+    return true;
+#else
+#    if SX_PLATFORM_WINDOWS
     ptr = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!ptr) {
         sx_out_of_memory();
@@ -56,19 +57,23 @@ bool sx_fiber_stack_init(sx_fiber_stack* fstack, unsigned int size)
     }
     DWORD old_opts;
     VirtualProtect(ptr, sx_os_pagesz(), PAGE_READWRITE | PAGE_GUARD, &old_opts);
-#elif SX_PLATFORM_POSIX
+#    elif SX_PLATFORM_POSIX
     ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) {
         sx_out_of_memory();
         return false;
     }
     mprotect(ptr, sx_os_pagesz(), PROT_NONE);
-#else
+#    else
     ptr = malloc(size);
     if (!ptr) {
         sx_out_of_memory();
         return false;
     }
+#    endif
+    fstack->sptr = (uint8_t*)ptr + size;    // Move to end of the memory block for stack pointer
+    fstack->ssize = size;
+    return true;
 #endif
 
     fstack->sptr = (uint8_t*)ptr + size;    // Move to end of the memory block for stack pointer
@@ -92,9 +97,7 @@ void sx_fiber_stack_release(sx_fiber_stack* fstack)
     sx_assert(fstack->sptr);
     void* ptr = (uint8_t*)fstack->sptr - fstack->ssize;
 
-#if SX_PLATFORM_EMSCRIPTEN
-    free(ptr);
-#elif SX_PLATFORM_WINDOWS
+#if SX_PLATFORM_WINDOWS
     VirtualFree(ptr, 0, MEM_RELEASE);
 #elif SX_PLATFORM_POSIX
     munmap(ptr, fstack->ssize);
@@ -104,27 +107,57 @@ void sx_fiber_stack_release(sx_fiber_stack* fstack)
 }
 
 #if SX_PLATFORM_EMSCRIPTEN
-static void sx_fiber_entry(void* arg)
+static SX_NO_INLINE sx__fiber_t* sx__fiber_active(void) {
+  return active_fiber;
+}
+sx__fiber_t* sx_fiber_active(void) {
+  /*
+  Compilers aggressively optimize the use of TLS by caching loads.
+  Since fiber code can migrate between threads it’s possible for the load to be stale.
+  To prevent this from happening we avoid inline functions.
+  */
+  sx__fiber_t* (*volatile func)(void) = sx__fiber_active;
+  return func();
+}
+
+static void fiber_entry(void* ctx)
 {
-    sx_fiber_ctx* ctx = (sx_fiber_ctx*)arg;
-    ctx->cb((sx_fiber_transfer){ .from = ctx->from, .user = ctx->user });
-    running = ctx->from;
+    sx__fiber_t* fiber = (sx__fiber_t*)ctx;
+    
+    void *bottom_old = NULL;
+    size_t size_old = 0;
+    __sanitizer_finish_switch_fiber(fiber->fake_stack_save, (const void**)&bottom_old, &size_old);
+    
+    ((sx_fiber_cb*)fiber->cb)((sx_fiber_transfer){ .from = fiber->from, .user = fiber->user });
+}
+
+static void sx__fiber_create()
+{
+    if (!active_fiber) {
+        main_fiber = calloc(1, sizeof(sx__fiber_t));
+        void* main_asyncify_stack = malloc(SX_ASYNCIFY_STACK_SIZE);
+
+        emscripten_fiber_init_from_current_context(&main_fiber->ctx, main_asyncify_stack,
+                                                   SX_ASYNCIFY_STACK_SIZE);
+        active_fiber = main_fiber;
+    }
 }
 #endif
 
 sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
 {
 #if SX_PLATFORM_EMSCRIPTEN
-    sx_fiber_ctx* ctx = calloc(1, sizeof(sx_fiber_ctx));
-    ctx->cb = fiber_cb;
-#    ifdef HAS_ASAN
-    ctx->asan_fake_stack = NULL;
-    ctx->asan_stack = stack.sptr;
-    ctx->asan_stack_size = stack.ssize;
-#    endif
-    emscripten_fiber_init(&ctx->fiber, sx_fiber_entry, ctx, stack.sptr, stack.ssize,
-                          ctx->asyncify_stack, sizeof(ctx->asyncify_stack));
-    return ctx;
+    sx__fiber_create();
+
+    sx__fiber_t* fiber = calloc(1, sizeof(sx__fiber_t));
+    fiber->stack_bottom = stack.sptr;
+    fiber->stack_size = stack.ssize;
+    fiber->cb = fiber_cb;
+    void* asyncify_stack = malloc(SX_ASYNCIFY_STACK_SIZE);
+    emscripten_fiber_init(&fiber->ctx, fiber_entry, fiber, stack.sptr, stack.ssize, asyncify_stack,
+                          SX_ASYNCIFY_STACK_SIZE);
+
+    return (sx_fiber_t)fiber;
 #else
     return make_fcontext(stack.sptr, stack.ssize, fiber_cb);
 #endif
@@ -133,37 +166,16 @@ sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
 sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user)
 {
 #if SX_PLATFORM_EMSCRIPTEN
-    sx_fiber_ctx* ctx = (sx_fiber_ctx*)to;
-    sx_fiber_ctx* from = running;
-    if (!from) {
-        main = calloc(1, sizeof(sx_fiber_ctx));
-        main->asan_fake_stack = NULL;
-        main->asan_stack = NULL;
-        main->asan_stack_size = 0;
-        from = main;
-        emscripten_fiber_init_from_current_context(&from->fiber, main_asyncify_stack,
-                                                   SX_ASYNCFY_STACK_SIZE);
-    } else {
-#    if defined(HAS_ASAN)
-        void* bottom_old = NULL;
-        size_t size_old = 0;
-        __sanitizer_finish_switch_fiber(from->asan_fake_stack, (const void**)&bottom_old,
-                                        &size_old);
-        from->asan_fake_stack = NULL;
-#    endif
-    }
+    sx__fiber_t* from = sx_fiber_active();
+    active_fiber = (sx__fiber_t*)to;
+    active_fiber->from = from;
+    active_fiber->user = user;
 
-    running = ctx;
-    ctx->from = from;
-    ctx->user = user;
+    __sanitizer_start_switch_fiber(&active_fiber->fake_stack_save, active_fiber->stack_bottom, active_fiber->stack_size);
 
-#    if defined(HAS_ASAN)
-    __sanitizer_start_switch_fiber(&ctx->asan_fake_stack, ctx->asan_stack, ctx->asan_stack_size);
-#    endif
+    emscripten_fiber_swap(&from->ctx, &active_fiber->ctx);
 
-    emscripten_fiber_swap(&from->fiber, &ctx->fiber);
-
-    return (sx_fiber_transfer){ .from = ctx };
+    return (sx_fiber_transfer){ .from = to };
 #else
     return jump_fcontext(to, user);
 #endif
