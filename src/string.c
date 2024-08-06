@@ -159,6 +159,10 @@ int sx_strlen(const char* str)
 
 static inline int sx__strnlen(const char* str, int _max)
 {
+#if SX_PLATFORM_EMSCRIPTEN
+    const char *p = memchr(str, 0, _max);
+    return p ? p - str : _max;
+#else
     const char* char_ptr;
     const uintptr_t* longword_ptr;
     uintptr_t longword, himagic, lomagic;
@@ -214,6 +218,7 @@ static inline int sx__strnlen(const char* str, int _max)
     sx_assertf(0, "Not a null-terminated string");
     return -1;
     #endif
+#endif // SX_PLATFORM_EMSCRIPTEN
 }
 
 char* sx_strncpy(char* SX_RESTRICT dst, int dst_sz, const char* SX_RESTRICT src, int _num)
@@ -260,6 +265,9 @@ bool sx_isspace(char ch)
 // https://github.com/lattera/glibc/blob/master/string/strrchr.c
 const char* sx_strrchar(const char* str, char ch)
 {
+#if SX_PLATFORM_EMSCRIPTEN
+    return strrchr(str, ch);
+#else
     const char *found = NULL, *p;
     ch = (uint8_t)ch;
 
@@ -270,6 +278,7 @@ const char* sx_strrchar(const char* str, char ch)
         str = p + 1;
     }
     return (const char*)found;
+#endif // SX_PLATFORM_EMSCRIPTEN
 }
 
 // https://github.com/lattera/glibc/blob/master/string/strchr.c
