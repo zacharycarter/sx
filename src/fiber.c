@@ -126,8 +126,9 @@ static void fiber_entry(void* ctx)
     
     void *bottom_old = NULL;
     size_t size_old = 0;
+#ifdef SX_ASAN_ENABLED
     __sanitizer_finish_switch_fiber(fiber->fake_stack_save, (const void**)&bottom_old, &size_old);
-    
+#endif
     ((sx_fiber_cb*)fiber->cb)((sx_fiber_transfer){ .from = fiber->from, .user = fiber->user });
 }
 
@@ -150,8 +151,10 @@ sx_fiber_t sx_fiber_create(const sx_fiber_stack stack, sx_fiber_cb* fiber_cb)
     sx__fiber_create();
 
     sx__fiber_t* fiber = calloc(1, sizeof(sx__fiber_t));
+#ifdef SX_ASAN_ENABLED
     fiber->stack_bottom = stack.sptr;
     fiber->stack_size = stack.ssize;
+#endif
     fiber->cb = fiber_cb;
     void* asyncify_stack = malloc(SX_ASYNCIFY_STACK_SIZE);
     emscripten_fiber_init(&fiber->ctx, fiber_entry, fiber, stack.sptr, stack.ssize, asyncify_stack,
@@ -171,7 +174,9 @@ sx_fiber_transfer sx_fiber_switch(const sx_fiber_t to, void* user)
     active_fiber->from = from;
     active_fiber->user = user;
 
+#ifdef SX_ASAN_ENABLED
     __sanitizer_start_switch_fiber(&active_fiber->fake_stack_save, active_fiber->stack_bottom, active_fiber->stack_size);
+#endif
 
     emscripten_fiber_swap(&from->ctx, &active_fiber->ctx);
 

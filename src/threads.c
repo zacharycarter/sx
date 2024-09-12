@@ -16,6 +16,7 @@
 #    include <mach/mach.h>
 #    include <pthread.h>
 #elif SX_PLATFORM_EMSCRIPTEN
+#    define _GNU_SOURCE
 #    include <errno.h>
 #    include <pthread.h>
 #    include <semaphore.h>
@@ -253,7 +254,12 @@ int sx_thread_destroy(sx_thread* thrd, const sx_alloc* alloc)
         int32_t i;
     } cast;
 
+#    if SX_PLATFORM_EMSCRIPTEN
+    pthread_tryjoin_np(thrd->handle, &cast.ptr);
+    // pthread_detach(thrd->handle);
+#    else
     pthread_join(thrd->handle, &cast.ptr);
+#    endif
 
     sx_semaphore_release(&thrd->sem);
 
